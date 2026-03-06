@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSessionStore } from '@/stores/session-store';
 import { useRoleStore } from '@/stores/role-store';
-import { Plus, Play, Search, Zap, MessageSquare, Handshake, FileCheck } from 'lucide-react';
+import { Plus, Play, Search, Zap, MessageSquare, Handshake, FileCheck, Trash2 } from 'lucide-react';
+import { renderMarkdown } from '@/utils/markdown';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
 import Input from '@/components/ui/Input';
@@ -46,7 +47,7 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 export default function SessionsPage() {
-  const { sessions, activeSessionId, messages, loading, negotiationLoading, negotiationStep, thinkingRole, error, fetchSessions, setActiveSession, createSession, runOpinions, runAnalysis, runDebate, runConsensus, runPrdCheck } = useSessionStore();
+  const { sessions, activeSessionId, messages, loading, negotiationLoading, negotiationStep, thinkingRole, error, fetchSessions, setActiveSession, createSession, deleteSession, runOpinions, runAnalysis, runDebate, runConsensus, runPrdCheck } = useSessionStore();
   const { roles, fetchRoles } = useRoleStore();
   const [showNew, setShowNew] = useState(false);
   const [moderatorInput, setModeratorInput] = useState('');
@@ -84,20 +85,27 @@ export default function SessionsPage() {
         </div>
         <div className="flex-1 overflow-auto p-2 space-y-1">
           {sessions.map(s => (
-            <button
-              key={s.id}
-              onClick={() => setActiveSession(s.id)}
-              className={clsx(
-                'w-full text-left p-3 rounded-lg text-sm transition-colors',
-                s.id === activeSessionId ? 'bg-blue-600/20 border border-blue-500/30' : 'hover:bg-gray-700'
-              )}
-            >
-              <div className="font-medium truncate">{s.topic}</div>
-              <div className="flex items-center gap-2 mt-1">
-                <Tag color={PHASE_COLORS[s.phase] as any}>{PHASE_LABELS[s.phase]}</Tag>
-                <span className="text-xs text-gray-500">{STATUS_LABELS[s.status]}</span>
-              </div>
-            </button>
+            <div key={s.id} className="group relative">
+              <button
+                onClick={() => setActiveSession(s.id)}
+                className={clsx(
+                  'w-full text-left p-3 rounded-lg text-sm transition-colors',
+                  s.id === activeSessionId ? 'bg-blue-600/20 border border-blue-500/30' : 'hover:bg-gray-700'
+                )}
+              >
+                <div className="font-medium truncate pr-6">{s.topic}</div>
+                <div className="flex items-center gap-2 mt-1">
+                  <Tag color={PHASE_COLORS[s.phase] as any}>{PHASE_LABELS[s.phase]}</Tag>
+                  <span className="text-xs text-gray-500">{STATUS_LABELS[s.status]}</span>
+                </div>
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); if (confirm('确定删除此会话？')) deleteSession(s.id); }}
+                className="absolute top-3 right-3 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-gray-500 hover:text-red-400 transition-all"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
           ))}
           {sessions.length === 0 && !loading && (
             <p className="text-center text-gray-500 text-sm py-8">暂无会话</p>
@@ -146,12 +154,20 @@ export default function SessionsPage() {
               )}
             </div>
 
+            {/* Negotiation Progress */}
+            <NegotiationProgress status={activeSession.status} />
+
             {/* Messages */}
             <div className="flex-1 overflow-auto p-4 space-y-3">
               {thinkingRole && negotiationLoading && (
-                <div className="flex items-center gap-2 text-sm text-gray-400 animate-pulse">
-                  <div className="w-2 h-2 bg-blue-400 rounded-full animate-ping" />
-                  {thinkingRole} 正在{negotiationStep}...
+                <div className="flex items-center gap-3 text-sm text-gray-400 bg-gray-800/60 rounded-lg px-4 py-3 border border-gray-700/50">
+                  <div className="relative flex items-center justify-center w-5 h-5">
+                    <div className="absolute w-5 h-5 border-2 border-blue-400/30 border-t-blue-400 rounded-full animate-spin" />
+                  </div>
+                  <span className="animate-pulse">
+                    <span className="font-medium text-gray-300">{thinkingRole}</span>
+                    {' '}正在{negotiationStep}...
+                  </span>
                 </div>
               )}
               {activeMessages.map((msg) => (
@@ -178,16 +194,57 @@ export default function SessionsPage() {
 
 function MessageBubble({ message }: { message: Message }) {
   const style = TYPE_STYLES[message.type] || TYPE_STYLES.opinion;
-  const isSystem = !message.roleId;
 
   return (
     <div className={clsx('border-l-4 rounded-lg bg-gray-800 p-4', style.border)}>
-      <div className="flex items-center gap-2 mb-2">
-        {message.roleAvatar && <span className="text-lg">{message.roleAvatar}</span>}
-        <span className="font-medium text-sm">{message.roleName || '协商引擎'}</span>
-        <Tag color={style.color as any}>{style.label}</Tag>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          {message.roleAvatar && <span className="text-lg">{message.roleAvatar}</span>}
+          <span className="font-medium text-sm">{message.roleName || '协商引擎'}</span>
+          <Tag color={style.color as any}>{style.label}</Tag>
+        </div>
+        <span className="text-xs text-gray-500">
+          {new Date(message.createdAt).toLocaleTimeString('zh-CN')}
+        </span>
       </div>
-      <div className="text-sm text-gray-300 whitespace-pre-wrap">{message.content}</div>
+      <div
+        className="text-sm text-gray-300 max-w-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:mb-2 [&_h1]:text-lg [&_h1]:font-bold [&_h1]:mb-2 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:mb-2 [&_h3]:text-sm [&_h3]:font-medium [&_h3]:mb-1 [&_blockquote]:border-l-2 [&_blockquote]:border-gray-600 [&_blockquote]:pl-3 [&_blockquote]:text-gray-400 [&_code]:bg-gray-700 [&_code]:px-1 [&_code]:rounded [&_code]:text-xs [&_pre]:bg-gray-900 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_a]:text-blue-400 [&_a]:underline [&_strong]:text-gray-200 [&_em]:text-gray-300"
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
+      />
+    </div>
+  );
+}
+
+function NegotiationProgress({ status }: { status: string }) {
+  const steps = [
+    { key: 'opinions', label: '表态', doneStatus: ['opinions_done', 'analysis_running', 'analysis_done', 'debate_running', 'debate_done', 'consensus_running', 'consensus_reached', 'prd_check_running', 'prd_check_done'] },
+    { key: 'analysis', label: '分析', doneStatus: ['analysis_done', 'debate_running', 'debate_done', 'consensus_running', 'consensus_reached', 'prd_check_running', 'prd_check_done'] },
+    { key: 'debate', label: '辩论', doneStatus: ['debate_done', 'consensus_running', 'consensus_reached', 'prd_check_running', 'prd_check_done'] },
+    { key: 'consensus', label: '共识', doneStatus: ['consensus_reached', 'prd_check_running', 'prd_check_done'] },
+    { key: 'prd', label: 'PRD', doneStatus: ['prd_check_done'] },
+  ];
+
+  return (
+    <div className="flex items-center gap-1 px-4 py-3 bg-gray-800/50 border-b border-gray-700">
+      {steps.map((step, i) => {
+        const isDone = step.doneStatus.includes(status);
+        const isRunning = status.includes(step.key) && status.endsWith('_running');
+        return (
+          <div key={step.key} className="flex items-center">
+            <div className={clsx(
+              'flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium transition-colors',
+              isDone ? 'bg-green-500/20 text-green-400' :
+              isRunning ? 'bg-blue-500/20 text-blue-400 animate-pulse' :
+              'bg-gray-700/50 text-gray-500'
+            )}>
+              {isDone && <span>&#10003;</span>}
+              {isRunning && <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-ping" />}
+              {step.label}
+            </div>
+            {i < steps.length - 1 && <div className="w-6 h-px bg-gray-700 mx-1" />}
+          </div>
+        );
+      })}
     </div>
   );
 }

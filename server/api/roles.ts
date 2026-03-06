@@ -49,4 +49,24 @@ router.delete('/:id', (req, res) => {
   res.status(204).send();
 });
 
+// Get role participation stats
+router.get('/:id/stats', (req, res) => {
+  const role = roleEngine.getById(req.params.id);
+  if (!role) return res.status(404).json({ error: 'Role not found' });
+  const stats = roleEngine.getParticipationStats(req.params.id);
+  res.json(stats);
+});
+
+// Get role version history
+router.get('/:id/history', (req, res) => {
+  const role = roleEngine.getById(req.params.id);
+  if (!role) return res.status(404).json({ error: 'Role not found' });
+  res.json({
+    roleId: role.id,
+    roleName: role.name,
+    currentVersion: role.version,
+    history: role.history,
+  });
+});
+
 export default router;

@@ -35,9 +35,18 @@ function transitionStatus(sessionId: string, from: string, to: SessionStatus): v
   sessionRepo.updateStatus(sessionId, to);
 }
 
+function safeTransition(sessionId: string, expectedStatuses: string[], to: SessionStatus): void {
+  const session = sessionRepo.getById(sessionId);
+  if (!session) throw new Error('Session not found');
+  if (!expectedStatuses.includes(session.status)) {
+    throw new Error(`Cannot transition: session is in '${session.status}', expected one of [${expectedStatuses.join(', ')}]`);
+  }
+  transitionStatus(sessionId, session.status, to);
+}
+
 export const negotiationEngine = {
   async *runOpinions(session: Session): AsyncGenerator<NegotiationEvent> {
-    transitionStatus(session.id, session.status, 'opinions_running');
+    safeTransition(session.id, ['created'], 'opinions_running');
 
     for (const roleId of session.participantIds) {
       const role = roleRepo.getById(roleId);
@@ -71,7 +80,7 @@ export const negotiationEngine = {
   },
 
   async *runAnalysis(session: Session): AsyncGenerator<NegotiationEvent> {
-    transitionStatus(session.id, session.status, 'analysis_running');
+    safeTransition(session.id, ['opinions_done', 'debate_done'], 'analysis_running');
     yield { event: 'analysis_start' };
 
     const opinions = messageRepo.listBySessionAndType(session.id, 'opinion');
@@ -102,7 +111,7 @@ export const negotiationEngine = {
   },
 
   async *runDebate(session: Session, moderatorPrompt?: string): AsyncGenerator<NegotiationEvent> {
-    transitionStatus(session.id, session.status, 'debate_running');
+    safeTransition(session.id, ['analysis_done'], 'debate_running');
 
     const allMessages = messageRepo.listBySession(session.id);
     const recentHistory = allMessages.slice(-10).map(m => `【${m.roleName || '协商引擎'}】[${m.type}]: ${m.content}`).join('\n\n');
@@ -143,7 +152,7 @@ export const negotiationEngine = {
   },
 
   async *runConsensus(session: Session): AsyncGenerator<NegotiationEvent> {
-    transitionStatus(session.id, session.status, 'consensus_running');
+    safeTransition(session.id, ['analysis_done', 'debate_done'], 'consensus_running');
     yield { event: 'consensus_start' };
 
     const allMessages = messageRepo.listBySession(session.id);
@@ -175,7 +184,7 @@ export const negotiationEngine = {
   },
 
   async *runPrdCheck(session: Session): AsyncGenerator<NegotiationEvent> {
-    transitionStatus(session.id, session.status, 'prd_check_running');
+    safeTransition(session.id, ['consensus_reached'], 'prd_check_running');
 
     const consensusMessages = messageRepo.listBySessionAndType(session.id, 'consensus');
     const lastConsensus = consensusMessages[consensusMessages.length - 1];

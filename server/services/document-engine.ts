@@ -3,12 +3,13 @@ import path from 'path';
 import crypto from 'crypto';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import { getDb } from '../db/database.js';
 import { llmCompleteJson } from '../llm/llm-router.js';
 import { SCREENING_SYSTEM, buildScreeningUserMessage } from '../llm/templates/screening.js';
 import { TOPIC_EXTRACTION_SYSTEM, buildTopicExtractionUserMessage } from '../llm/templates/topic-extraction.js';
 import type { Section, ScreenedSection, Topic } from '../../src/types/document.js';
 
-function parseMarkdownSections(content: string): Section[] {
+export function parseMarkdownSections(content: string): Section[] {
   const lines = content.split('\n');
   const sections: Section[] = [];
   let currentTitle = '';
@@ -58,18 +59,74 @@ function extractSummary(content: string, maxLen: number = 300): string {
   return textOnly.length > maxLen ? textOnly.slice(0, maxLen) + '...' : textOnly;
 }
 
+function computeFileHash(filePath: string): string {
+  const content = fs.readFileSync(filePath);
+  return crypto.createHash('sha256').update(content).digest('hex');
+}
+
 export const documentEngine = {
-  listDocuments(): Array<{ filename: string; path: string }> {
+  listDocuments(): Array<{ filename: string; path: string; size: number }> {
     const docsPath = config.projectDocsPath;
-    if (!fs.existsSync(docsPath)) return [];
+    if (!fs.existsSync(docsPath)) {
+      logger.warn(`Project docs path not found: ${docsPath}`);
+      return [];
+    }
     return fs.readdirSync(docsPath)
       .filter(f => f.endsWith('.md'))
-      .map(f => ({ filename: f, path: path.join(docsPath, f) }));
+      .sort()
+      .map(f => {
+        const fullPath = path.join(docsPath, f);
+        const stat = fs.statSync(fullPath);
+        return { filename: f, path: fullPath, size: stat.size };
+      });
   },
 
   parseDocument(filePath: string): Section[] {
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Document not found: ${filePath}`);
+    }
     const content = fs.readFileSync(filePath, 'utf-8');
     return parseMarkdownSections(content);
+  },
+
+  /**
+   * Get cached screening results or return null
+   */
+  getCachedScreening(filePath: string): ScreenedSection[] | null {
+    try {
+      const hash = computeFileHash(filePath);
+      const db = getDb();
+      const row = db.prepare(
+        'SELECT screened_sections FROM document_cache WHERE file_path = ? AND file_hash = ?'
+      ).get(filePath, hash) as any;
+      if (row) {
+        logger.info(`Cache hit for screening: ${filePath}`);
+        return JSON.parse(row.screened_sections);
+      }
+    } catch (error: any) {
+      logger.warn(`Cache read error: ${error.message}`);
+    }
+    return null;
+  },
+
+  /**
+   * Save screening results to cache
+   */
+  cacheScreening(filePath: string, results: ScreenedSection[]): void {
+    try {
+      const hash = computeFileHash(filePath);
+      const db = getDb();
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      // Delete old cache entries for this file
+      db.prepare('DELETE FROM document_cache WHERE file_path = ?').run(filePath);
+      db.prepare(
+        'INSERT INTO document_cache (id, file_path, file_hash, screened_sections, created_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(id, filePath, hash, JSON.stringify(results), now);
+      logger.info(`Cached screening results for: ${filePath}`);
+    } catch (error: any) {
+      logger.warn(`Cache write error: ${error.message}`);
+    }
   },
 
   async screenSections(sections: Section[], roleNames: string[]): Promise<ScreenedSection[]> {

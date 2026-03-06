@@ -13,7 +13,8 @@ export async function consumeSSE(
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`SSE request failed: ${response.status}`);
+    const errorText = await response.text().catch(() => response.statusText);
+    throw new Error(`SSE request failed: ${response.status} - ${errorText}`);
   }
 
   const reader = response.body.getReader();
@@ -33,10 +34,14 @@ export async function consumeSSE(
         try {
           const event = JSON.parse(line.slice(6)) as NegotiationEvent;
           onEvent(event);
+          if (event.event === 'error' && onError) {
+            onError(event.error || 'Unknown error');
+          }
         } catch {
           // skip invalid JSON
         }
       }
+      // Skip comments (:keepalive) and event: lines
     }
   }
 }
