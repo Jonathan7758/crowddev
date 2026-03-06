@@ -49,7 +49,8 @@ app.get('/api/health', (_req, res) => {
 
 // Serve static files in production
 if (config.nodeEnv === 'production') {
-  const clientPath = path.resolve(__dirname, '../client');
+  // In production: dist/server/server/index.js → need to go up to dist/client
+  const clientPath = path.resolve(__dirname, '../../client');
   app.use(express.static(clientPath));
   app.get('*', (_req, res) => {
     res.sendFile(path.join(clientPath, 'index.html'));
