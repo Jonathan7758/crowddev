@@ -47,6 +47,35 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+// LLM health check - test Claude API connectivity
+app.get('/api/health/llm', async (_req, res) => {
+  const start = Date.now();
+  try {
+    const { claudeClient } = await import('./llm/claude-client.js');
+    const result = await claudeClient.complete(
+      '你是一个测试助手。',
+      [{ role: 'user', content: '请回复"OK"两个字母。' }],
+      10
+    );
+    res.json({
+      status: 'ok',
+      model: config.anthropic.model,
+      response: result.slice(0, 50),
+      latencyMs: Date.now() - start,
+      apiKeySet: !!config.anthropic.apiKey,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      status: 'error',
+      model: config.anthropic.model,
+      error: error.message,
+      latencyMs: Date.now() - start,
+      apiKeySet: !!config.anthropic.apiKey,
+      apiKeyPrefix: config.anthropic.apiKey?.slice(0, 10) || 'NOT SET',
+    });
+  }
+});
+
 // Serve static files in production
 if (config.nodeEnv === 'production') {
   // In production: dist/server/server/index.js → need to go up to dist/client

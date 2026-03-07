@@ -13,18 +13,27 @@ export class ClaudeClient {
   private model: string;
 
   constructor() {
-    this.client = new Anthropic({ apiKey: config.anthropic.apiKey });
+    this.client = new Anthropic({
+      apiKey: config.anthropic.apiKey,
+      timeout: 60_000, // 60 second timeout per request
+    });
     this.model = config.anthropic.model;
   }
 
   async complete(systemPrompt: string, messages: ChatMessage[], maxTokens?: number): Promise<string> {
     const tokens = maxTokens || config.anthropic.defaults.rolePlay.maxTokens;
 
+    if (!config.anthropic.apiKey) {
+      throw new Error('ANTHROPIC_API_KEY is not configured');
+    }
+
     for (let attempt = 0; attempt <= config.anthropic.maxRetries; attempt++) {
       try {
-        if (config.log.llm) {
-          logger.debug('Claude API call', { system: systemPrompt.slice(0, 200), messageCount: messages.length });
-        }
+        logger.info(`Claude API call (attempt ${attempt + 1}/${config.anthropic.maxRetries + 1})`, {
+          model: this.model,
+          maxTokens: tokens,
+          systemLen: systemPrompt.length,
+        });
 
         const response = await this.client.messages.create({
           model: this.model,
@@ -38,17 +47,33 @@ export class ClaudeClient {
           .map(block => (block as any).text)
           .join('');
 
-        if (config.log.llm) {
-          logger.debug('Claude response', { text: text.slice(0, 200), tokens: response.usage });
-        }
+        logger.info('Claude API success', {
+          textLen: text.length,
+          inputTokens: response.usage?.input_tokens,
+          outputTokens: response.usage?.output_tokens,
+        });
 
         return text;
       } catch (error: any) {
-        logger.error(`Claude API error (attempt ${attempt + 1})`, { error: error.message });
+        const errMsg = error.message || String(error);
+        const statusCode = error.status || error.statusCode;
+        logger.error(`Claude API error (attempt ${attempt + 1}/${config.anthropic.maxRetries + 1})`, {
+          error: errMsg,
+          status: statusCode,
+          type: error.constructor?.name,
+        });
+
+        // Don't retry on auth errors or invalid request
+        if (statusCode === 401 || statusCode === 403 || statusCode === 400) {
+          throw new Error(`Claude API 认证失败 (${statusCode}): ${errMsg}`);
+        }
+
         if (attempt < config.anthropic.maxRetries) {
-          await this.delay(config.anthropic.retryDelayMs * (attempt + 1));
+          const delayMs = config.anthropic.retryDelayMs * (attempt + 1);
+          logger.info(`Retrying in ${delayMs}ms...`);
+          await this.delay(delayMs);
         } else {
-          throw error;
+          throw new Error(`Claude API 调用失败 (${config.anthropic.maxRetries + 1} 次重试后): ${errMsg}`);
         }
       }
     }

@@ -45,4 +45,28 @@ router.get('/:id/messages', (req, res) => {
   }
 });
 
+// Reset a stuck session back to the appropriate previous status
+router.post('/:id/reset', (req, res) => {
+  const session = sessionRepo.getById(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+
+  // Map running statuses back to their previous stable status
+  const resetMap: Record<string, string> = {
+    opinions_running: 'created',
+    analysis_running: 'opinions_done',
+    debate_running: 'analysis_done',
+    consensus_running: 'debate_done',
+    prd_check_running: 'consensus_reached',
+  };
+
+  const resetTo = resetMap[session.status];
+  if (!resetTo) {
+    return res.status(400).json({ error: `会话状态 "${session.status}" 不需要重置` });
+  }
+
+  sessionRepo.updateStatus(session.id, resetTo as any);
+  const updated = sessionRepo.getById(session.id);
+  res.json(updated);
+});
+
 export default router;

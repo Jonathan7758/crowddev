@@ -6,6 +6,15 @@ import type { NegotiationEvent } from '../../src/types/message.js';
 
 const router = Router();
 
+// Map running statuses back to their previous stable status for rollback
+const ROLLBACK_MAP: Record<string, string> = {
+  opinions_running: 'created',
+  analysis_running: 'opinions_done',
+  debate_running: 'analysis_done',
+  consensus_running: 'debate_done',
+  prd_check_running: 'consensus_reached',
+};
+
 function setupSSE(res: Response): void {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -25,9 +34,11 @@ function sendSSE(res: Response, event: NegotiationEvent): void {
 async function streamGenerator(
   req: Request,
   res: Response,
+  sessionId: string,
   generator: AsyncGenerator<NegotiationEvent>
 ): Promise<void> {
   let closed = false;
+  let receivedComplete = false;
 
   // Handle client disconnect
   req.on('close', () => {
@@ -50,14 +61,51 @@ async function streamGenerator(
     for await (const event of generator) {
       if (closed) break;
       sendSSE(res, event);
+      if (event.event === 'complete') {
+        receivedComplete = true;
+      }
     }
   } catch (error: any) {
+    logger.error('Negotiation stream error', { error: error.message, sessionId });
+
+    // Rollback session status on error
+    try {
+      const session = sessionRepo.getById(sessionId);
+      if (session) {
+        const rollbackTo = ROLLBACK_MAP[session.status];
+        if (rollbackTo) {
+          sessionRepo.updateStatus(sessionId, rollbackTo as any);
+          logger.info(`Rolled back session ${sessionId} from ${session.status} to ${rollbackTo}`);
+        }
+      }
+    } catch (rollbackErr: any) {
+      logger.error('Failed to rollback session status', { error: rollbackErr.message });
+    }
+
     if (!closed) {
       sendSSE(res, { event: 'error', error: error.message });
+      // Send a complete event so the client knows the stream is done
+      sendSSE(res, { event: 'complete', sessionStatus: ROLLBACK_MAP[sessionRepo.getById(sessionId)?.status || ''] || 'created' });
     }
-    logger.error('Negotiation stream error', { error: error.message });
   } finally {
     clearInterval(keepAlive);
+
+    // If no complete event was received and no error, rollback as safety net
+    if (!receivedComplete && !closed) {
+      try {
+        const session = sessionRepo.getById(sessionId);
+        if (session) {
+          const rollbackTo = ROLLBACK_MAP[session.status];
+          if (rollbackTo) {
+            sessionRepo.updateStatus(sessionId, rollbackTo as any);
+            logger.warn(`Safety rollback: session ${sessionId} from ${session.status} to ${rollbackTo}`);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     if (!closed) {
       res.end();
     }
@@ -69,35 +117,35 @@ router.post('/:sessionId/opinions', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
-  await streamGenerator(req, res, negotiationEngine.runOpinions(session));
+  await streamGenerator(req, res, session.id, negotiationEngine.runOpinions(session));
 });
 
 router.post('/:sessionId/analysis', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
-  await streamGenerator(req, res, negotiationEngine.runAnalysis(session));
+  await streamGenerator(req, res, session.id, negotiationEngine.runAnalysis(session));
 });
 
 router.post('/:sessionId/debate', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
-  await streamGenerator(req, res, negotiationEngine.runDebate(session, req.body?.moderatorPrompt));
+  await streamGenerator(req, res, session.id, negotiationEngine.runDebate(session, req.body?.moderatorPrompt));
 });
 
 router.post('/:sessionId/consensus', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
-  await streamGenerator(req, res, negotiationEngine.runConsensus(session));
+  await streamGenerator(req, res, session.id, negotiationEngine.runConsensus(session));
 });
 
 router.post('/:sessionId/prd-check', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
-  await streamGenerator(req, res, negotiationEngine.runPrdCheck(session));
+  await streamGenerator(req, res, session.id, negotiationEngine.runPrdCheck(session));
 });
 
 export default router;

@@ -117,6 +117,24 @@ async function runNegotiationStep(sessionId: string, endpoint: string, label: st
   try {
     await consumeSSE(`/api/negotiation/${sessionId}/${endpoint}`, body || {}, handleEvent);
   } catch (e: any) {
-    store.setState({ error: e.message, negotiationLoading: false, negotiationStep: null });
+    store.setState({ error: e.message });
+  } finally {
+    // Always reset loading state when SSE stream ends, regardless of how it ended.
+    // Also refresh session list to get the latest status from server.
+    const state = store.getState();
+    if (state.negotiationLoading) {
+      store.setState({ negotiationLoading: false, negotiationStep: null, thinkingRole: null });
+    }
+    // Refresh sessions and messages to sync with server state
+    try {
+      const sessions = await api.get<Session[]>('/sessions');
+      const msgs = await api.get<Message[]>(`/sessions/${sessionId}/messages`);
+      store.setState({
+        sessions,
+        messages: { ...store.getState().messages, [sessionId]: msgs },
+      });
+    } catch {
+      // Ignore refresh errors
+    }
   }
 }
