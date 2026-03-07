@@ -76,6 +76,39 @@ app.get('/api/health/llm', async (_req, res) => {
   }
 });
 
+// SSE test endpoint - for debugging proxy buffering
+app.get('/api/health/sse-test', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  if (res.socket) {
+    res.socket.setNoDelay(true);
+    res.socket.setTimeout(0);
+  }
+  res.flushHeaders();
+  res.write(':connected\n\n');
+
+  let count = 0;
+  const interval = setInterval(() => {
+    count++;
+    res.write(`data: {"count":${count},"time":"${new Date().toISOString()}"}\n\n`);
+    if (typeof (res as any).flush === 'function') {
+      (res as any).flush();
+    }
+    if (count >= 5) {
+      clearInterval(interval);
+      res.end();
+    }
+  }, 1000);
+
+  req.on('close', () => {
+    clearInterval(interval);
+  });
+});
+
 // Serve static files in production
 if (config.nodeEnv === 'production') {
   // In production: dist/server/server/index.js → need to go up to dist/client
