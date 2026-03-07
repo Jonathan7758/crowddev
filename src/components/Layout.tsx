@@ -5,7 +5,7 @@ import clsx from 'clsx';
 const NAV_ITEMS = [
   { to: '/sessions', label: '协商会话', icon: MessageSquare },
   { to: '/roles', label: '角色管理', icon: Users },
-  { to: '/prd', label: 'PRD 拆解', icon: FileText },
+  { to: '/prd', label: '文档拆解', icon: FileText },
   { to: '/evolution', label: '演化追踪', icon: BarChart3 },
 ];
 
