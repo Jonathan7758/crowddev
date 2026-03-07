@@ -2,14 +2,14 @@ import type { NegotiationEvent } from '@/types/message';
 
 export async function consumeSSE(
   url: string,
-  body: unknown,
+  _body: unknown,
   onEvent: (event: NegotiationEvent) => void,
   onError?: (error: string) => void
 ): Promise<void> {
+  // Use GET for SSE — Railway proxy buffers POST SSE responses
   const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    method: 'GET',
+    headers: { 'Accept': 'text/event-stream' },
   });
 
   if (!response.ok || !response.body) {

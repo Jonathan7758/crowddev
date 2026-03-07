@@ -22,23 +22,18 @@ function setupSSE(res: Response): void {
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
-  // Disable Nagle's algorithm for immediate flushing of SSE events
+  // Disable Nagle's algorithm for immediate flushing
   if (res.socket) {
     res.socket.setNoDelay(true);
     res.socket.setTimeout(0);
   }
-  // Send initial comment to establish connection
-  res.write(':ok\n\n');
   res.flushHeaders();
+  res.write(':ok\n\n');
 }
 
 function sendSSE(res: Response, event: NegotiationEvent): void {
   const eventType = event.event;
   res.write(`event: ${eventType}\ndata: ${JSON.stringify(event)}\n\n`);
-  // Force flush - some proxies (Railway) may buffer SSE responses
-  if (typeof (res as any).flush === 'function') {
-    (res as any).flush();
-  }
 }
 
 async function streamGenerator(
@@ -61,9 +56,6 @@ async function streamGenerator(
     if (!closed) {
       try {
         res.write(':keepalive\n\n');
-        if (typeof (res as any).flush === 'function') {
-          (res as any).flush();
-        }
       } catch {
         closed = true;
       }
@@ -97,8 +89,8 @@ async function streamGenerator(
 
     if (!closed) {
       sendSSE(res, { event: 'error', error: error.message });
-      // Send a complete event so the client knows the stream is done
-      sendSSE(res, { event: 'complete', sessionStatus: ROLLBACK_MAP[sessionRepo.getById(sessionId)?.status || ''] || 'created' });
+      const currentSession = sessionRepo.getById(sessionId);
+      sendSSE(res, { event: 'complete', sessionStatus: currentSession?.status || 'created' });
     }
   } finally {
     clearInterval(keepAlive);
@@ -125,36 +117,37 @@ async function streamGenerator(
   }
 }
 
-// Re-read session from DB to get latest status
-router.post('/:sessionId/opinions', async (req: Request, res: Response) => {
+// Use GET for SSE endpoints — Railway proxy buffers POST SSE responses
+router.get('/:sessionId/opinions', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
   await streamGenerator(req, res, session.id, negotiationEngine.runOpinions(session));
 });
 
-router.post('/:sessionId/analysis', async (req: Request, res: Response) => {
+router.get('/:sessionId/analysis', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
   await streamGenerator(req, res, session.id, negotiationEngine.runAnalysis(session));
 });
 
-router.post('/:sessionId/debate', async (req: Request, res: Response) => {
+router.get('/:sessionId/debate', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
+  const moderatorPrompt = req.query.moderatorPrompt as string | undefined;
   setupSSE(res);
-  await streamGenerator(req, res, session.id, negotiationEngine.runDebate(session, req.body?.moderatorPrompt));
+  await streamGenerator(req, res, session.id, negotiationEngine.runDebate(session, moderatorPrompt));
 });
 
-router.post('/:sessionId/consensus', async (req: Request, res: Response) => {
+router.get('/:sessionId/consensus', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);
   await streamGenerator(req, res, session.id, negotiationEngine.runConsensus(session));
 });
 
-router.post('/:sessionId/prd-check', async (req: Request, res: Response) => {
+router.get('/:sessionId/prd-check', async (req: Request, res: Response) => {
   const session = sessionRepo.getById(req.params.sessionId);
   if (!session) return res.status(404).json({ error: 'Session not found' });
   setupSSE(res);

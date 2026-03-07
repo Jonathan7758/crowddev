@@ -72,12 +72,15 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   runOpinions: (sessionId) => runNegotiationStep(sessionId, 'opinions', '表态'),
   runAnalysis: (sessionId) => runNegotiationStep(sessionId, 'analysis', '分析'),
-  runDebate: (sessionId, moderatorPrompt) => runNegotiationStep(sessionId, 'debate', '辩论', { moderatorPrompt }),
+  runDebate: (sessionId, moderatorPrompt) => {
+    const queryParam = moderatorPrompt ? `?moderatorPrompt=${encodeURIComponent(moderatorPrompt)}` : '';
+    return runNegotiationStep(sessionId, `debate${queryParam}`, '辩论');
+  },
   runConsensus: (sessionId) => runNegotiationStep(sessionId, 'consensus', '共识'),
   runPrdCheck: (sessionId) => runNegotiationStep(sessionId, 'prd-check', 'PRD检查'),
 }));
 
-async function runNegotiationStep(sessionId: string, endpoint: string, label: string, body?: unknown) {
+async function runNegotiationStep(sessionId: string, endpoint: string, label: string) {
   const store = useSessionStore;
   store.setState({ negotiationLoading: true, negotiationStep: label, error: null });
 
@@ -115,12 +118,12 @@ async function runNegotiationStep(sessionId: string, endpoint: string, label: st
   };
 
   try {
-    await consumeSSE(`/api/negotiation/${sessionId}/${endpoint}`, body || {}, handleEvent);
+    // Use GET for SSE — Railway proxy buffers POST SSE responses
+    await consumeSSE(`/api/negotiation/${sessionId}/${endpoint}`, null, handleEvent);
   } catch (e: any) {
     store.setState({ error: e.message });
   } finally {
-    // Always reset loading state when SSE stream ends, regardless of how it ended.
-    // Also refresh session list to get the latest status from server.
+    // Always reset loading state when SSE stream ends
     const state = store.getState();
     if (state.negotiationLoading) {
       store.setState({ negotiationLoading: false, negotiationStep: null, thinkingRole: null });
