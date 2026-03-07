@@ -7,17 +7,58 @@ import { logger } from '../logger.js';
 
 const router = Router();
 
-// List all documents
+// List all documents (server-side + uploaded)
 router.get('/', (_req, res) => {
   const docs = documentEngine.listDocuments();
   res.json(docs);
 });
 
-// Get document sections
-router.get('/:filename/sections', (req, res) => {
-  const filePath = path.join(config.projectDocsPath, req.params.filename);
+// Upload a document (receive content as JSON)
+router.post('/upload', (req, res) => {
+  const { filename, content } = req.body;
+
+  if (!filename || typeof filename !== 'string') {
+    return res.status(400).json({ error: '请提供文件名' });
+  }
+  if (!content || typeof content !== 'string') {
+    return res.status(400).json({ error: '请提供文件内容' });
+  }
+  if (!filename.endsWith('.md')) {
+    return res.status(400).json({ error: '仅支持 .md 格式的文件' });
+  }
+
   try {
-    const sections = documentEngine.parseDocument(filePath);
+    const doc = documentEngine.saveUploadedDocument(filename, content);
+    res.status(201).json(doc);
+  } catch (error: any) {
+    logger.error('Upload failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete an uploaded document
+router.delete('/uploaded/:id', (req, res) => {
+  const deleted = documentEngine.deleteUploadedDocument(req.params.id);
+  if (deleted) {
+    res.status(204).end();
+  } else {
+    res.status(404).json({ error: '文档未找到' });
+  }
+});
+
+// Get document sections (supports both local and uploaded)
+router.get('/:filename/sections', (req, res) => {
+  const { source, id } = req.query;
+  const isUploaded = source === 'uploaded';
+
+  try {
+    let sections;
+    if (isUploaded && id) {
+      sections = documentEngine.parseDocument(id as string, true);
+    } else {
+      const filePath = path.join(config.projectDocsPath, req.params.filename);
+      sections = documentEngine.parseDocument(filePath);
+    }
     res.json(sections);
   } catch (error: any) {
     logger.error(`Failed to parse document: ${req.params.filename}`, { error: error.message });
@@ -25,21 +66,24 @@ router.get('/:filename/sections', (req, res) => {
   }
 });
 
-// Screen document sections with AI (with caching)
+// Screen document sections with AI (with caching, supports uploaded docs)
 router.post('/:filename/screen', async (req, res) => {
-  const filePath = path.join(config.projectDocsPath, req.params.filename);
+  const { source, id } = req.query;
+  const isUploaded = source === 'uploaded';
   const useCache = req.query.cache !== 'false';
 
   try {
+    const docKey = isUploaded && id ? (id as string) : path.join(config.projectDocsPath, req.params.filename);
+
     // Check cache first
     if (useCache) {
-      const cached = documentEngine.getCachedScreening(filePath);
+      const cached = documentEngine.getCachedScreening(docKey, isUploaded);
       if (cached) {
         return res.json(cached);
       }
     }
 
-    const sections = documentEngine.parseDocument(filePath);
+    const sections = documentEngine.parseDocument(docKey, isUploaded);
     const roles = roleEngine.list();
     const roleNames = roles.map(r => r.name);
 
@@ -50,7 +94,7 @@ router.post('/:filename/screen', async (req, res) => {
     const screened = await documentEngine.screenSections(sections, roleNames);
 
     // Cache the results
-    documentEngine.cacheScreening(filePath, screened);
+    documentEngine.cacheScreening(docKey, screened, isUploaded);
 
     res.json(screened);
   } catch (error: any) {
@@ -59,17 +103,19 @@ router.post('/:filename/screen', async (req, res) => {
   }
 });
 
-// Extract topics from selected sections
+// Extract topics from selected sections (supports uploaded docs)
 router.post('/extract-topics', async (req, res) => {
-  const { filename, sectionIndices } = req.body;
+  const { filename, sectionIndices, source, id } = req.body;
 
   if (!filename || !Array.isArray(sectionIndices) || sectionIndices.length === 0) {
     return res.status(400).json({ error: '请提供文件名和章节索引' });
   }
 
-  const filePath = path.join(config.projectDocsPath, filename);
+  const isUploaded = source === 'uploaded';
+
   try {
-    const allSections = documentEngine.parseDocument(filePath);
+    const docKey = isUploaded && id ? id : path.join(config.projectDocsPath, filename);
+    const allSections = documentEngine.parseDocument(docKey, isUploaded);
     const selected = allSections.filter(s => sectionIndices.includes(s.index));
 
     if (selected.length === 0) {

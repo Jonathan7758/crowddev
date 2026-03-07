@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRoleStore } from '@/stores/role-store';
 import { useSessionStore } from '@/stores/session-store';
 import { api } from '@/api/client';
@@ -6,6 +6,13 @@ import Button from '@/components/ui/Button';
 import Tag from '@/components/ui/Tag';
 import clsx from 'clsx';
 import type { ScreenedSection, Topic } from '@/types/document';
+
+interface DocInfo {
+  id?: string;
+  filename: string;
+  size?: number;
+  source: 'local' | 'uploaded';
+}
 
 const STEPS = ['选择文档', '预筛章节', '提取议题'] as const;
 
@@ -19,16 +26,18 @@ export default function PRDDecomposerPage() {
   const { roles, fetchRoles } = useRoleStore();
   const { createSession } = useSessionStore();
   const [step, setStep] = useState(0);
-  const [docs, setDocs] = useState<Array<{ filename: string; size?: number }>>([]);
-  const [selectedDoc, setSelectedDoc] = useState('');
+  const [docs, setDocs] = useState<DocInfo[]>([]);
+  const [selectedDoc, setSelectedDoc] = useState<DocInfo | null>(null);
   const [sections, setSections] = useState<ScreenedSection[]>([]);
   const [selectedSections, setSelectedSections] = useState<Set<number>>(new Set());
   const [topics, setTopics] = useState<Topic[]>([]);
   const [selectedTopics, setSelectedTopics] = useState<Set<number>>(new Set());
   const [phase, setPhase] = useState<'design' | 'acceptance' | 'operations'>('design');
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdCount, setCreatedCount] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchRoles();
@@ -39,10 +48,10 @@ export default function PRDDecomposerPage() {
     setLoading(true);
     setError(null);
     try {
-      const d = await api.get<Array<{ filename: string; size?: number }>>('/documents');
+      const d = await api.get<DocInfo[]>('/documents');
       setDocs(d);
       if (d.length === 0) {
-        setError('未找到项目文档，请确认 project-docs 目录下有 .md 文件');
+        setError('未找到文档，请上传 .md 文件或确认 project-docs 目录下有 .md 文件');
       }
     } catch (e: any) {
       setError(`加载文档失败: ${e.message}`);
@@ -51,12 +60,67 @@ export default function PRDDecomposerPage() {
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setUploading(true);
+    setError(null);
+
+    try {
+      for (const file of Array.from(files)) {
+        if (!file.name.endsWith('.md')) {
+          setError(`跳过非 .md 文件: ${file.name}`);
+          continue;
+        }
+        const content = await readFileAsText(file);
+        await api.post('/documents/upload', { filename: file.name, content });
+      }
+      await loadDocs();
+    } catch (e: any) {
+      setError(`上传失败: ${e.message}`);
+    } finally {
+      setUploading(false);
+      // Reset file input so same file can be re-selected
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const readFileAsText = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('文件读取失败'));
+      reader.readAsText(file);
+    });
+  };
+
+  const deleteUploadedDoc = async (doc: DocInfo) => {
+    if (!doc.id) return;
+    try {
+      await api.delete(`/documents/uploaded/${doc.id}`);
+      if (selectedDoc?.id === doc.id) {
+        setSelectedDoc(null);
+      }
+      await loadDocs();
+    } catch (e: any) {
+      setError(`删除失败: ${e.message}`);
+    }
+  };
+
   const screenDoc = async () => {
     if (!selectedDoc) return;
     setLoading(true);
     setError(null);
     try {
-      const screened = await api.post<ScreenedSection[]>(`/documents/${encodeURIComponent(selectedDoc)}/screen`);
+      const params = selectedDoc.source === 'uploaded' && selectedDoc.id
+        ? `?source=uploaded&id=${selectedDoc.id}`
+        : '';
+      const screened = await api.post<ScreenedSection[]>(
+        `/documents/${encodeURIComponent(selectedDoc.filename)}/screen${params}`
+      );
       setSections(screened);
       setSelectedSections(new Set(screened.filter(s => s.score >= 7).map(s => s.index)));
       setStep(1);
@@ -68,12 +132,15 @@ export default function PRDDecomposerPage() {
   };
 
   const extractTopics = async () => {
+    if (!selectedDoc) return;
     setLoading(true);
     setError(null);
     try {
       const t = await api.post<Topic[]>('/documents/extract-topics', {
-        filename: selectedDoc,
+        filename: selectedDoc.filename,
         sectionIndices: Array.from(selectedSections),
+        source: selectedDoc.source,
+        id: selectedDoc.id,
       });
       setTopics(t);
       setSelectedTopics(new Set(t.map((_, i) => i)));
@@ -111,7 +178,7 @@ export default function PRDDecomposerPage() {
       setStep(0);
       setTopics([]);
       setSections([]);
-      setSelectedDoc('');
+      setSelectedDoc(null);
       setDocs([]);
       setCreatedCount(0);
     }
@@ -119,7 +186,7 @@ export default function PRDDecomposerPage() {
 
   const resetAll = () => {
     setStep(0);
-    setSelectedDoc('');
+    setSelectedDoc(null);
     setSections([]);
     setSelectedSections(new Set());
     setTopics([]);
@@ -146,7 +213,7 @@ export default function PRDDecomposerPage() {
           </Button>
         )}
       </div>
-      <p className="text-gray-400 text-sm mb-6">从项目文档中提取协商议题，支持设计期、验收期和运营期</p>
+      <p className="text-gray-400 text-sm mb-6">从项目文档中提取协商议题，支持上传本地 .md 文件</p>
 
       {/* Phase selector */}
       <div className="mb-6">
@@ -198,27 +265,83 @@ export default function PRDDecomposerPage() {
       {/* Step 0: Select document */}
       {step === 0 && (
         <div className="space-y-4">
+          {/* Upload button */}
+          <div className="flex items-center gap-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".md"
+              multiple
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+            <Button
+              variant="secondary"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? '上传中...' : '上传本地 .md 文件'}
+            </Button>
+            <span className="text-xs text-gray-500">
+              支持选择多个 Markdown 文件
+            </span>
+          </div>
+
           {loading && docs.length === 0 && (
             <p className="text-sm text-gray-400 animate-pulse">加载文档列表...</p>
           )}
+
           {docs.length > 0 && (
             <div className="space-y-2">
               <p className="text-xs text-gray-500">找到 {docs.length} 个文档，点击选择：</p>
-              {docs.map(d => (
-                <button
-                  key={d.filename}
-                  onClick={() => setSelectedDoc(d.filename)}
-                  className={clsx(
-                    'w-full text-left p-3 rounded-lg border text-sm flex items-center justify-between',
-                    selectedDoc === d.filename
-                      ? 'border-blue-500 bg-blue-600/10'
-                      : 'border-gray-700 bg-gray-800 hover:bg-gray-700'
-                  )}
-                >
-                  <span className="truncate">{d.filename}</span>
-                  {d.size && <span className="text-xs text-gray-500 ml-2 shrink-0">{formatSize(d.size)}</span>}
-                </button>
-              ))}
+              {docs.map(d => {
+                const key = d.source === 'uploaded' ? `uploaded-${d.id}` : `local-${d.filename}`;
+                const isSelected = selectedDoc?.source === d.source &&
+                  (d.source === 'uploaded' ? selectedDoc?.id === d.id : selectedDoc?.filename === d.filename);
+                return (
+                  <div
+                    key={key}
+                    className={clsx(
+                      'w-full text-left p-3 rounded-lg border text-sm flex items-center justify-between group',
+                      isSelected
+                        ? 'border-blue-500 bg-blue-600/10'
+                        : 'border-gray-700 bg-gray-800 hover:bg-gray-700'
+                    )}
+                  >
+                    <button
+                      className="flex-1 text-left flex items-center gap-2 min-w-0"
+                      onClick={() => setSelectedDoc(d)}
+                    >
+                      <span className="truncate">{d.filename}</span>
+                      {d.source === 'uploaded' && (
+                        <Tag color="blue">已上传</Tag>
+                      )}
+                      {d.source === 'local' && (
+                        <Tag color="gray">服务端</Tag>
+                      )}
+                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {d.size != null && d.size > 0 && (
+                        <span className="text-xs text-gray-500">{formatSize(d.size)}</span>
+                      )}
+                      {d.source === 'uploaded' && d.id && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteUploadedDoc(d);
+                          }}
+                          className="text-gray-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                          title="删除"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M3 6h18" /><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" /><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
           {selectedDoc && (

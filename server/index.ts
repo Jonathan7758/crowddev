@@ -20,7 +20,7 @@ const app = express();
 // Middleware
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 // Request logging
 if (config.log.api) {

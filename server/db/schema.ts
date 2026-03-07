@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS evolution_log (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS uploaded_documents (
+  id TEXT PRIMARY KEY,
+  filename TEXT NOT NULL,
+  content TEXT NOT NULL,
+  file_size INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
 CREATE INDEX IF NOT EXISTS idx_sessions_phase ON sessions(phase);

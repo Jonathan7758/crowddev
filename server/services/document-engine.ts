@@ -64,43 +64,125 @@ function computeFileHash(filePath: string): string {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+export interface DocumentInfo {
+  id?: string;
+  filename: string;
+  path?: string;
+  size: number;
+  source: 'local' | 'uploaded';
+}
+
 export const documentEngine = {
-  listDocuments(): Array<{ filename: string; path: string; size: number }> {
+  /** List documents from both server-side directory and uploaded docs in DB */
+  listDocuments(): DocumentInfo[] {
+    // Server-side docs from project-docs directory
+    const localDocs: DocumentInfo[] = [];
     const docsPath = config.projectDocsPath;
-    if (!fs.existsSync(docsPath)) {
-      logger.warn(`Project docs path not found: ${docsPath}`);
-      return [];
-    }
-    return fs.readdirSync(docsPath)
-      .filter(f => f.endsWith('.md'))
-      .sort()
-      .map(f => {
+    if (fs.existsSync(docsPath)) {
+      const files = fs.readdirSync(docsPath)
+        .filter(f => f.endsWith('.md'))
+        .sort();
+      for (const f of files) {
         const fullPath = path.join(docsPath, f);
         const stat = fs.statSync(fullPath);
-        return { filename: f, path: fullPath, size: stat.size };
-      });
+        localDocs.push({ filename: f, path: fullPath, size: stat.size, source: 'local' });
+      }
+    }
+
+    // Uploaded docs from database
+    const uploadedDocs = this.listUploadedDocuments();
+
+    return [...localDocs, ...uploadedDocs];
   },
 
-  parseDocument(filePath: string): Section[] {
-    if (!fs.existsSync(filePath)) {
-      throw new Error(`Document not found: ${filePath}`);
+  /** List uploaded documents from DB */
+  listUploadedDocuments(): DocumentInfo[] {
+    const db = getDb();
+    const rows = db.prepare('SELECT id, filename, file_size, created_at FROM uploaded_documents ORDER BY created_at DESC').all();
+    return rows.map((r: any) => ({
+      id: r.id,
+      filename: r.filename,
+      size: r.file_size,
+      source: 'uploaded' as const,
+    }));
+  },
+
+  /** Save an uploaded document to DB */
+  saveUploadedDocument(filename: string, content: string): DocumentInfo {
+    const db = getDb();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const fileSize = Buffer.byteLength(content, 'utf-8');
+    db.prepare(
+      'INSERT INTO uploaded_documents (id, filename, content, file_size, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(id, filename, content, fileSize, now);
+    logger.info(`Uploaded document saved: ${filename} (${id})`);
+    return { id, filename, size: fileSize, source: 'uploaded' };
+  },
+
+  /** Delete an uploaded document from DB */
+  deleteUploadedDocument(id: string): boolean {
+    const db = getDb();
+    const result = db.prepare('DELETE FROM uploaded_documents WHERE id = ?').run(id);
+    if (result.changes > 0) {
+      // Also delete related cache entries
+      db.prepare('DELETE FROM document_cache WHERE file_path = ?').run(`uploaded:${id}`);
+      logger.info(`Uploaded document deleted: ${id}`);
+      return true;
     }
-    const content = fs.readFileSync(filePath, 'utf-8');
+    return false;
+  },
+
+  /** Get content of an uploaded document from DB */
+  getUploadedContent(id: string): string | null {
+    const db = getDb();
+    const row = db.prepare('SELECT content FROM uploaded_documents WHERE id = ?').get(id) as any;
+    return row ? row.content : null;
+  },
+
+  /** Parse document - supports both file path and uploaded doc ID */
+  parseDocument(filePathOrId: string, isUploaded: boolean = false): Section[] {
+    if (isUploaded) {
+      const content = this.getUploadedContent(filePathOrId);
+      if (!content) {
+        throw new Error(`Uploaded document not found: ${filePathOrId}`);
+      }
+      return parseMarkdownSections(content);
+    }
+    if (!fs.existsSync(filePathOrId)) {
+      throw new Error(`Document not found: ${filePathOrId}`);
+    }
+    const content = fs.readFileSync(filePathOrId, 'utf-8');
     return parseMarkdownSections(content);
+  },
+
+  /**
+   * Compute hash for content string (for uploaded docs)
+   */
+  computeContentHash(content: string): string {
+    return crypto.createHash('sha256').update(content).digest('hex');
   },
 
   /**
    * Get cached screening results or return null
    */
-  getCachedScreening(filePath: string): ScreenedSection[] | null {
+  getCachedScreening(filePathOrId: string, isUploaded: boolean = false): ScreenedSection[] | null {
     try {
-      const hash = computeFileHash(filePath);
+      const cacheKey = isUploaded ? `uploaded:${filePathOrId}` : filePathOrId;
+      let hash: string;
+      if (isUploaded) {
+        const content = this.getUploadedContent(filePathOrId);
+        if (!content) return null;
+        hash = this.computeContentHash(content);
+      } else {
+        hash = computeFileHash(filePathOrId);
+      }
       const db = getDb();
       const row = db.prepare(
         'SELECT screened_sections FROM document_cache WHERE file_path = ? AND file_hash = ?'
-      ).get(filePath, hash) as any;
+      ).get(cacheKey, hash) as any;
       if (row) {
-        logger.info(`Cache hit for screening: ${filePath}`);
+        logger.info(`Cache hit for screening: ${cacheKey}`);
         return JSON.parse(row.screened_sections);
       }
     } catch (error: any) {
@@ -112,18 +194,26 @@ export const documentEngine = {
   /**
    * Save screening results to cache
    */
-  cacheScreening(filePath: string, results: ScreenedSection[]): void {
+  cacheScreening(filePathOrId: string, results: ScreenedSection[], isUploaded: boolean = false): void {
     try {
-      const hash = computeFileHash(filePath);
+      const cacheKey = isUploaded ? `uploaded:${filePathOrId}` : filePathOrId;
+      let hash: string;
+      if (isUploaded) {
+        const content = this.getUploadedContent(filePathOrId);
+        if (!content) return;
+        hash = this.computeContentHash(content);
+      } else {
+        hash = computeFileHash(filePathOrId);
+      }
       const db = getDb();
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
       // Delete old cache entries for this file
-      db.prepare('DELETE FROM document_cache WHERE file_path = ?').run(filePath);
+      db.prepare('DELETE FROM document_cache WHERE file_path = ?').run(cacheKey);
       db.prepare(
         'INSERT INTO document_cache (id, file_path, file_hash, screened_sections, created_at) VALUES (?, ?, ?, ?, ?)'
-      ).run(id, filePath, hash, JSON.stringify(results), now);
-      logger.info(`Cached screening results for: ${filePath}`);
+      ).run(id, cacheKey, hash, JSON.stringify(results), now);
+      logger.info(`Cached screening results for: ${cacheKey}`);
     } catch (error: any) {
       logger.warn(`Cache write error: ${error.message}`);
     }
