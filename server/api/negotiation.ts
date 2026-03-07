@@ -22,13 +22,23 @@ function setupSSE(res: Response): void {
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
+  // Disable Nagle's algorithm for immediate flushing of SSE events
+  if (res.socket) {
+    res.socket.setNoDelay(true);
+    res.socket.setTimeout(0);
+  }
   // Send initial comment to establish connection
   res.write(':ok\n\n');
+  res.flushHeaders();
 }
 
 function sendSSE(res: Response, event: NegotiationEvent): void {
   const eventType = event.event;
   res.write(`event: ${eventType}\ndata: ${JSON.stringify(event)}\n\n`);
+  // Force flush - some proxies (Railway) may buffer SSE responses
+  if (typeof (res as any).flush === 'function') {
+    (res as any).flush();
+  }
 }
 
 async function streamGenerator(
@@ -46,16 +56,19 @@ async function streamGenerator(
     logger.info('SSE client disconnected');
   });
 
-  // Keep-alive timer
+  // Keep-alive timer (send every 10 seconds to prevent proxy timeout)
   const keepAlive = setInterval(() => {
     if (!closed) {
       try {
         res.write(':keepalive\n\n');
+        if (typeof (res as any).flush === 'function') {
+          (res as any).flush();
+        }
       } catch {
         closed = true;
       }
     }
-  }, 15000);
+  }, 10000);
 
   try {
     for await (const event of generator) {
