@@ -32,6 +32,7 @@ export default function PRDDecomposerPage() {
 
   useEffect(() => {
     fetchRoles();
+    loadDocs();
   }, []);
 
   const loadDocs = async () => {
@@ -118,7 +119,6 @@ export default function PRDDecomposerPage() {
 
   const resetAll = () => {
     setStep(0);
-    setDocs([]);
     setSelectedDoc('');
     setSections([]);
     setSelectedSections(new Set());
@@ -126,6 +126,7 @@ export default function PRDDecomposerPage() {
     setSelectedTopics(new Set());
     setError(null);
     setCreatedCount(0);
+    loadDocs();
   };
 
   const formatSize = (bytes?: number) => {
@@ -197,9 +198,9 @@ export default function PRDDecomposerPage() {
       {/* Step 0: Select document */}
       {step === 0 && (
         <div className="space-y-4">
-          <Button variant="secondary" onClick={loadDocs} disabled={loading}>
-            {loading ? '加载中...' : '加载文档列表'}
-          </Button>
+          {loading && docs.length === 0 && (
+            <p className="text-sm text-gray-400 animate-pulse">加载文档列表...</p>
+          )}
           {docs.length > 0 && (
             <div className="space-y-2">
               <p className="text-xs text-gray-500">找到 {docs.length} 个文档，点击选择：</p>
