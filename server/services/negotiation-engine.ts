@@ -5,6 +5,7 @@ import { buildRolePrompt } from '../llm/prompt-builder.js';
 import { CONFLICT_ANALYSIS_SYSTEM, buildAnalysisUserMessage } from '../llm/templates/conflict-analysis.js';
 import { getConsensusTemplate, buildConsensusUserMessage } from '../llm/templates/consensus.js';
 import { PRD_UPDATE_SYSTEM, buildPrdUpdateUserMessage } from '../llm/templates/prd-update.js';
+import { formatAnalysisMarkdown, formatConsensusMarkdown, formatPrdCheckMarkdown } from '../llm/formatters.js';
 import { logger } from '../logger.js';
 import type { Session, SessionStatus } from '../../src/types/session.js';
 import type { Message, NegotiationEvent, ConflictAnalysis } from '../../src/types/message.js';
@@ -17,7 +18,7 @@ const VALID_TRANSITIONS: Record<string, string[]> = {
   analysis_running: ['analysis_done'],
   analysis_done: ['debate_running', 'consensus_running'],
   debate_running: ['debate_done'],
-  debate_done: ['analysis_running', 'consensus_running'],
+  debate_done: ['debate_running', 'analysis_running', 'consensus_running'],
   consensus_running: ['consensus_reached'],
   consensus_reached: ['prd_check_running'],
   prd_check_running: ['prd_check_done'],
@@ -42,6 +43,12 @@ function safeTransition(sessionId: string, expectedStatuses: string[], to: Sessi
     throw new Error(`Cannot transition: session is in '${session.status}', expected one of [${expectedStatuses.join(', ')}]`);
   }
   transitionStatus(sessionId, session.status, to);
+}
+
+/** Resolve roleId to display name */
+function resolveRoleName(roleId: string): string {
+  const role = roleRepo.getById(roleId);
+  return role?.name || roleId;
 }
 
 export const negotiationEngine = {
@@ -81,10 +88,12 @@ export const negotiationEngine = {
 
   async *runAnalysis(session: Session): AsyncGenerator<NegotiationEvent> {
     safeTransition(session.id, ['opinions_done', 'debate_done'], 'analysis_running');
-    yield { event: 'analysis_start' };
+    yield { event: 'role_thinking', roleId: '', roleName: '协商引擎', step: 'analysis' };
 
     const opinions = messageRepo.listBySessionAndType(session.id, 'opinion');
-    const opinionData = opinions.map(m => ({
+    const rebuttals = messageRepo.listBySessionAndType(session.id, 'rebuttal');
+    const allOpinions = [...opinions, ...rebuttals];
+    const opinionData = allOpinions.map(m => ({
       roleName: m.roleName || '未知',
       roleId: m.roleId || '',
       content: m.content,
@@ -92,7 +101,8 @@ export const negotiationEngine = {
 
     try {
       const userMsg = buildAnalysisUserMessage(session.topic, opinionData);
-      const content = await llmComplete('conflict_analysis', CONFLICT_ANALYSIS_SYSTEM, [{ role: 'user', content: userMsg }]);
+      const rawJson = await llmComplete('conflict_analysis', CONFLICT_ANALYSIS_SYSTEM, [{ role: 'user', content: userMsg }]);
+      const content = formatAnalysisMarkdown(rawJson, resolveRoleName);
       const message = messageRepo.create({
         sessionId: session.id,
         roleId: null,
@@ -111,7 +121,7 @@ export const negotiationEngine = {
   },
 
   async *runDebate(session: Session, moderatorPrompt?: string): AsyncGenerator<NegotiationEvent> {
-    safeTransition(session.id, ['analysis_done'], 'debate_running');
+    safeTransition(session.id, ['analysis_done', 'debate_done'], 'debate_running');
 
     const allMessages = messageRepo.listBySession(session.id);
     const recentHistory = allMessages.slice(-10).map(m => `【${m.roleName || '协商引擎'}】[${m.type}]: ${m.content}`).join('\n\n');
@@ -153,7 +163,7 @@ export const negotiationEngine = {
 
   async *runConsensus(session: Session): AsyncGenerator<NegotiationEvent> {
     safeTransition(session.id, ['analysis_done', 'debate_done'], 'consensus_running');
-    yield { event: 'consensus_start' };
+    yield { event: 'role_thinking', roleId: '', roleName: '协商引擎', step: 'consensus' };
 
     const allMessages = messageRepo.listBySession(session.id);
     const systemPrompt = getConsensusTemplate(session.phase as Phase);
@@ -163,7 +173,8 @@ export const negotiationEngine = {
     );
 
     try {
-      const content = await llmComplete('consensus', systemPrompt, [{ role: 'user', content: userMsg }]);
+      const rawJson = await llmComplete('consensus', systemPrompt, [{ role: 'user', content: userMsg }]);
+      const content = formatConsensusMarkdown(rawJson, session.phase, resolveRoleName);
       const message = messageRepo.create({
         sessionId: session.id,
         roleId: null,
@@ -173,7 +184,10 @@ export const negotiationEngine = {
       });
       yield { event: 'consensus_done', message };
 
-      evolutionRepo.log('consensus_reached', session.id, session.topic, { phase: session.phase });
+      evolutionRepo.log('consensus_reached', session.id, session.topic, {
+        phase: session.phase,
+        rawConsensus: rawJson,
+      });
     } catch (error: any) {
       logger.error('Consensus failed', { error: error.message });
       yield { event: 'error', error: `共识生成失败: ${error.message}` };
@@ -193,9 +207,12 @@ export const negotiationEngine = {
       return;
     }
 
+    yield { event: 'role_thinking', roleId: '', roleName: '协商引擎', step: 'prd-check' };
+
     try {
       const userMsg = buildPrdUpdateUserMessage(session.topic, lastConsensus.content, session.prdSection || '');
-      const content = await llmComplete('prd_update', PRD_UPDATE_SYSTEM, [{ role: 'user', content: userMsg }]);
+      const rawJson = await llmComplete('prd_update', PRD_UPDATE_SYSTEM, [{ role: 'user', content: userMsg }]);
+      const content = formatPrdCheckMarkdown(rawJson);
       const message = messageRepo.create({
         sessionId: session.id,
         roleId: null,
@@ -205,7 +222,10 @@ export const negotiationEngine = {
       });
       yield { event: 'prd_check_done', message };
 
-      evolutionRepo.log('prd_updated', session.id, session.topic, {});
+      evolutionRepo.log('prd_updated', session.id, session.topic, {
+        rawPrdUpdate: rawJson,
+        phase: session.phase,
+      });
     } catch (error: any) {
       logger.error('PRD check failed', { error: error.message });
       yield { event: 'error', error: `PRD检查失败: ${error.message}` };
@@ -213,5 +233,47 @@ export const negotiationEngine = {
 
     transitionStatus(session.id, 'prd_check_running', 'prd_check_done');
     yield { event: 'complete', sessionStatus: 'prd_check_done' };
+  },
+
+  /** Run the full negotiation pipeline: opinions → analysis → debate → consensus → prd-check */
+  async *runFull(session: Session): AsyncGenerator<NegotiationEvent> {
+    const steps = [
+      { label: '表态', run: (s: Session) => this.runOpinions(s), doneStatus: 'opinions_done' },
+      { label: '冲突分析', run: (s: Session) => this.runAnalysis(s), doneStatus: 'analysis_done' },
+      { label: '辩论回应', run: (s: Session) => this.runDebate(s), doneStatus: 'debate_done' },
+      { label: '寻求共识', run: (s: Session) => this.runConsensus(s), doneStatus: 'consensus_reached' },
+      { label: 'PRD检查', run: (s: Session) => this.runPrdCheck(s), doneStatus: 'prd_check_done' },
+    ];
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      // Emit step progress so frontend can update the label
+      yield { event: 'step_progress', stepLabel: step.label, stepNumber: i + 1, totalSteps: steps.length } as any;
+
+      // Re-read session from DB (except first step which uses the original)
+      const currentSession = i === 0 ? session : sessionRepo.getById(session.id);
+      if (!currentSession) return;
+
+      // Run the step, forwarding all events except intermediate 'complete'
+      for await (const event of step.run(currentSession)) {
+        if (event.event === 'complete') {
+          // Only forward the final complete (last step)
+          if (i === steps.length - 1) {
+            yield event;
+          }
+          break;
+        }
+        yield event;
+      }
+
+      // Verify the step completed successfully
+      const afterSession = sessionRepo.getById(session.id);
+      if (!afterSession || afterSession.status !== step.doneStatus) {
+        // Step didn't complete — emit error and final complete with current status
+        yield { event: 'error', error: `步骤"${step.label}"未能成功完成` } as any;
+        yield { event: 'complete', sessionStatus: afterSession?.status || 'created' } as any;
+        return;
+      }
+    }
   },
 };

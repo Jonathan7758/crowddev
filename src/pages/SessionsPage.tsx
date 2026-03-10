@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSessionStore } from '@/stores/session-store';
 import { useRoleStore } from '@/stores/role-store';
-import { Plus, Play, Search, Zap, MessageSquare, Handshake, FileCheck, Trash2 } from 'lucide-react';
+import { Plus, Play, Search, Zap, MessageSquare, Handshake, FileCheck, Trash2, Rocket, Download } from 'lucide-react';
 import { renderMarkdown } from '@/utils/markdown';
 import Button from '@/components/ui/Button';
 import Modal from '@/components/ui/Modal';
@@ -47,7 +47,7 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 export default function SessionsPage() {
-  const { sessions, activeSessionId, messages, loading, negotiationLoading, negotiationStep, thinkingRole, error, fetchSessions, setActiveSession, createSession, deleteSession, runOpinions, runAnalysis, runDebate, runConsensus, runPrdCheck } = useSessionStore();
+  const { sessions, activeSessionId, messages, loading, negotiationLoading, negotiationStep, thinkingRole, error, fetchSessions, setActiveSession, createSession, deleteSession, runOpinions, runAnalysis, runDebate, runConsensus, runPrdCheck, runFull } = useSessionStore();
   const { roles, fetchRoles } = useRoleStore();
   const [showNew, setShowNew] = useState(false);
   const [moderatorInput, setModeratorInput] = useState('');
@@ -71,8 +71,15 @@ export default function SessionsPage() {
       case 'debate': return s === 'analysis_done' || s === 'debate_done';
       case 'consensus': return s === 'analysis_done' || s === 'debate_done';
       case 'prd-check': return s === 'consensus_reached';
+      case 'full': return s === 'created';
       default: return false;
     }
+  };
+
+  const hasCompletedSessions = sessions.some(s => s.status === 'prd_check_done' || s.status === 'consensus_reached');
+
+  const handleDownloadSummary = () => {
+    window.open('/api/evolution/summary/download', '_blank');
   };
 
   return (
@@ -128,30 +135,46 @@ export default function SessionsPage() {
             </div>
 
             {/* Action bar */}
-            <div className="p-3 border-b border-gray-700 flex items-center gap-2 flex-wrap">
-              <Button size="sm" disabled={!canRun('opinions')} onClick={() => runOpinions(activeSession.id)}>
-                <Play size={14} className="mr-1" /> 启动表态
-              </Button>
-              <Button size="sm" variant="secondary" disabled={!canRun('analysis')} onClick={() => runAnalysis(activeSession.id)}>
-                <Search size={14} className="mr-1" /> 分析冲突
-              </Button>
-              <Button size="sm" variant="secondary" disabled={!canRun('debate')} onClick={() => runDebate(activeSession.id, moderatorInput || undefined)}>
-                <Zap size={14} className="mr-1" /> 辩论回应
-              </Button>
-              <Button size="sm" variant="secondary" disabled={!canRun('consensus')} onClick={() => runConsensus(activeSession.id)}>
-                <Handshake size={14} className="mr-1" /> 寻求共识
-              </Button>
-              <Button size="sm" variant="secondary" disabled={!canRun('prd-check')} onClick={() => runPrdCheck(activeSession.id)}>
-                <FileCheck size={14} className="mr-1" /> PRD检查
-              </Button>
-              {(canRun('debate')) && (
-                <input
-                  className="flex-1 min-w-[200px] px-3 py-1 bg-gray-700 border border-gray-600 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  placeholder="引导问题（可选）"
-                  value={moderatorInput}
-                  onChange={e => setModeratorInput(e.target.value)}
-                />
-              )}
+            <div className="p-3 border-b border-gray-700 flex flex-col gap-2">
+              {/* Primary: auto-run all + download */}
+              <div className="flex items-center gap-2">
+                <Button size="sm" disabled={!canRun('full')} onClick={() => runFull(activeSession.id)}>
+                  <Rocket size={14} className="mr-1" /> 一键协商
+                </Button>
+                {hasCompletedSessions && (
+                  <Button size="sm" variant="secondary" onClick={handleDownloadSummary}>
+                    <Download size={14} className="mr-1" /> 下载汇总
+                  </Button>
+                )}
+                <span className="text-xs text-gray-500 ml-2">自动执行：表态→分析→辩论→共识→PRD检查</span>
+              </div>
+              {/* Manual step-by-step controls */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-gray-500">分步执行：</span>
+                <Button size="sm" variant="secondary" disabled={!canRun('opinions')} onClick={() => runOpinions(activeSession.id)}>
+                  <Play size={14} className="mr-1" /> 表态
+                </Button>
+                <Button size="sm" variant="secondary" disabled={!canRun('analysis')} onClick={() => runAnalysis(activeSession.id)}>
+                  <Search size={14} className="mr-1" /> 分析
+                </Button>
+                <Button size="sm" variant="secondary" disabled={!canRun('debate')} onClick={() => runDebate(activeSession.id, moderatorInput || undefined)}>
+                  <Zap size={14} className="mr-1" /> 辩论
+                </Button>
+                <Button size="sm" variant="secondary" disabled={!canRun('consensus')} onClick={() => runConsensus(activeSession.id)}>
+                  <Handshake size={14} className="mr-1" /> 共识
+                </Button>
+                <Button size="sm" variant="secondary" disabled={!canRun('prd-check')} onClick={() => runPrdCheck(activeSession.id)}>
+                  <FileCheck size={14} className="mr-1" /> PRD
+                </Button>
+                {(canRun('debate')) && (
+                  <input
+                    className="flex-1 min-w-[200px] px-3 py-1 bg-gray-700 border border-gray-600 rounded-lg text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    placeholder="引导问题（可选）"
+                    value={moderatorInput}
+                    onChange={e => setModeratorInput(e.target.value)}
+                  />
+                )}
+              </div>
             </div>
 
             {/* Negotiation Progress */}

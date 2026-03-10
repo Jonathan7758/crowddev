@@ -23,6 +23,7 @@ interface SessionStore {
   runDebate: (sessionId: string, moderatorPrompt?: string) => Promise<void>;
   runConsensus: (sessionId: string) => Promise<void>;
   runPrdCheck: (sessionId: string) => Promise<void>;
+  runFull: (sessionId: string) => Promise<void>;
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
@@ -78,6 +79,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   },
   runConsensus: (sessionId) => runNegotiationStep(sessionId, 'consensus', '共识'),
   runPrdCheck: (sessionId) => runNegotiationStep(sessionId, 'prd-check', 'PRD检查'),
+  runFull: (sessionId) => runNegotiationStep(sessionId, 'full', '一键协商'),
 }));
 
 async function runNegotiationStep(sessionId: string, endpoint: string, label: string) {
@@ -110,6 +112,9 @@ async function runNegotiationStep(sessionId: string, endpoint: string, label: st
           negotiationStep: null,
           thinkingRole: null,
         });
+        break;
+      case 'step_progress':
+        store.setState({ negotiationStep: `${(event as any).stepLabel} (${(event as any).stepNumber}/${(event as any).totalSteps})` });
         break;
       case 'error':
         store.setState({ error: event.error });

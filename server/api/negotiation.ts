@@ -154,4 +154,12 @@ router.get('/:sessionId/prd-check', async (req: Request, res: Response) => {
   await streamGenerator(req, res, session.id, negotiationEngine.runPrdCheck(session));
 });
 
+// Full auto-progression: opinions → analysis → debate → consensus → prd-check
+router.get('/:sessionId/full', async (req: Request, res: Response) => {
+  const session = sessionRepo.getById(req.params.sessionId);
+  if (!session) return res.status(404).json({ error: 'Session not found' });
+  setupSSE(res);
+  await streamGenerator(req, res, session.id, negotiationEngine.runFull(session));
+});
+
 export default router;

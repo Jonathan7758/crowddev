@@ -38,5 +38,6 @@ export type NegotiationEvent =
   | { event: 'consensus_start' }
   | { event: 'consensus_done'; message: Message }
   | { event: 'prd_check_done'; message: Message }
+  | { event: 'step_progress'; stepLabel: string; stepNumber: number; totalSteps: number }
   | { event: 'error'; error: string }
   | { event: 'complete'; sessionStatus: string };
